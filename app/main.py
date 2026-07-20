@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import joblib
 import os
 from fastapi import FastAPI, HTTPException
@@ -7,61 +8,66 @@ from app.models import BuildingFeatures, PredictionResponse
 from app.preprocessing.clean_and_onehot import pipeline_preprocessing
 
 
-# 1. Initialisation de l'application FastAPI
+# 1. Initialisation de l'application
 app = FastAPI(
-    title="API de Prédiction Énergétique - Futurisys",
-    description="API découplée et industrialisée pour la prédiction énergétique des bâtiments.",
-    version="1.1.0"
+    title="API de Prédiction Multi-Modèles - Futurisys",
+    description="API industrialisée avec modèles découplés pour l'Énergie et le CO2.",
+    version="1.3.0"
 )
 
-# 2. Gestion du cycle de vie du modèle ML
-MODEL_PATH = "app/ml/model.pkl"
-model = None
+# 2. Emplacements des fichiers binaires
+MODEL_ENERGY_PATH = "app/ml/model_energy.pkl"
+MODEL_EMISSIONS_PATH = "app/ml/model_emissions.pkl"
+SCALER_PATH = "app/ml/scaler.pkl"
+
+model_energy = None
+model_emissions = None
+scaler = None
 
 @app.on_event("startup")
-def load_model():
-    global model
-    if os.path.exists(MODEL_PATH):
-        model = joblib.load(MODEL_PATH)
-        print("✅ Modèle ML chargé avec succès !")
+def load_ml_assets():
+    global model_energy, model_emissions, scaler
+    if os.path.exists(MODEL_ENERGY_PATH) and os.path.exists(MODEL_EMISSIONS_PATH) and os.path.exists(SCALER_PATH):
+        model_energy = joblib.load(MODEL_ENERGY_PATH)
+        model_emissions = joblib.load(MODEL_EMISSIONS_PATH)
+        scaler = joblib.load(SCALER_PATH)
+        print("✅ Tous les assets ML (Énergie, CO2, Scaler) sont chargés !")
     else:
-        print(f"⚠️ Attention: Modèle introuvable au chemin {MODEL_PATH}")
+        print("⚠️ Attention: L'un des modèles ou le Scaler est introuvable dans app/ml/")
 
-# 3. Route de santé (Health Check)
 @app.get("/", tags=["Health"])
 def read_root():
-    return {"message": "L'API Futurisys est opérationnelle.", "version": "1.1.0"}
+    return {"message": "L'API Multi-Modèles Futurisys est opérationnelle."}
 
-# 4. Route Principale de Prédiction
 @app.post("/predict", response_model=PredictionResponse, tags=["Prediction"])
 def predict(features: BuildingFeatures):
-    if model is None:
-        raise HTTPException(status_code=503, detail="Modèle non chargé sur le serveur.")
+    if model_energy is None or model_emissions is None or scaler is None:
+        raise HTTPException(status_code=503, detail="Modèles non initialisés sur le serveur.")
     
     try:
-        # ÉTAPE A : Extraction des données Pydantic au format dictionnaire brut
-        # by_alias=True conserve la clé exacte "PropertyGFABuilding(s)" requise par le preprocessing
+        # ÉTAPE A : Extraction des données brutes
         raw_data = features.model_dump(by_alias=True)
         
-        # ÉTAPE B : Appel du pipeline de transformation externalisé
-        # On lui passe la liste des colonnes cibles du modèle : model.feature_names_in_
-        df_processed = pipeline_preprocessing(raw_data, model.feature_names_in_)
+        # ÉTAPE B : Pipeline de Feature Engineering commun
+        # On passe la liste des caractéristiques apprises par le scaler
+        df_processed = pipeline_preprocessing(raw_data, scaler.feature_names_in_)
         
-        # ÉTAPE C : Inférence par le modèle
-        prediction = model.predict(df_processed)
+        # ÉTAPE C : Mise à l'échelle (StandardScaler)
+        data_scaled = scaler.transform(df_processed)
+        df_final = pd.DataFrame(data_scaled, columns=df_processed.columns)
         
-        # ÉTAPE D : Formatage de la réponse HTTP
-        if prediction.shape[1] == 2 if len(prediction.shape) > 1 else False:
-            return PredictionResponse(
-                SiteEnergyUse_kBtu=float(prediction[0][0]),
-                TotalGHGEmissions=float(prediction[0][1])
-            )
-        else:
-            return PredictionResponse(
-                SiteEnergyUse_kBtu=float(prediction[0]),
-                TotalGHGEmissions=0.0
-            )
+        # ÉTAPE D : Inférences parallèles sur les deux modèles distincts
+        pred_energy_log = model_energy.predict(df_final)[0]
+        pred_emissions_log = model_emissions.predict(df_final)[0]
+        
+        # ÉTAPE E : Transformation inverse (Rebasculement de l'échelle Log vers Réelle)
+        energie_finale = np.expm1(pred_energy_log)
+        emissions_finales = np.expm1(pred_emissions_log)
+        
+        return PredictionResponse(
+            SiteEnergyUse_kBtu=max(0.0, energie_finale),
+            TotalGHGEmissions=max(0.0, emissions_finales)
+        )
             
     except Exception as e:
-        # En production, on loggue l'erreur en interne et on renvoie un code propre au client
-        raise HTTPException(status_code=400, detail=f"Erreur de traitement des données : {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Erreur lors du calcul : {str(e)}")
