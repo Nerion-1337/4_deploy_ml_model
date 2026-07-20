@@ -2,11 +2,16 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
-from fastapi import FastAPI, HTTPException
-from app.models import BuildingFeatures, PredictionResponse
+from fastapi import FastAPI, HTTPException, Depends
+from app.models import BuildingFeatures, PredictionResponse, PredictionHistory
+from app.database import engine, get_db, Base
+from sqlalchemy.orm import Session
 # --- IMPORTS MODULE ---
 from app.preprocessing.clean_and_onehot import pipeline_preprocessing
 
+# --- CRÉATION DE LA TABLE AUTOMATIQUE ---
+# Si la table "predictions_history" n'existe pas, SQLAlchemy la crée tout seul !
+Base.metadata.create_all(bind=engine)
 
 # 1. Initialisation de l'application
 app = FastAPI(
@@ -38,36 +43,53 @@ def load_ml_assets():
 @app.get("/", tags=["Health"])
 def read_root():
     return {"message": "L'API Multi-Modèles Futurisys est opérationnelle."}
-
+            
+# --- ROUTE PREDICT MISE À JOUR AVEC SAUVEGARDE DB ---
+# On ajoute "db: Session = Depends(get_db)" dans les paramètres
 @app.post("/predict", response_model=PredictionResponse, tags=["Prediction"])
-def predict(features: BuildingFeatures):
+def predict(features: BuildingFeatures, db: Session = Depends(get_db)):
     if model_energy is None or model_emissions is None or scaler is None:
-        raise HTTPException(status_code=503, detail="Modèles non initialisés sur le serveur.")
+        raise HTTPException(status_code=503, detail="Modèles non initialisés.")
     
     try:
-        # ÉTAPE A : Extraction des données brutes
         raw_data = features.model_dump(by_alias=True)
         
-        # ÉTAPE B : Pipeline de Feature Engineering commun
-        # On passe la liste des caractéristiques apprises par le scaler
+        # 1. Pipeline ML
         df_processed = pipeline_preprocessing(raw_data, scaler.feature_names_in_)
-        
-        # ÉTAPE C : Mise à l'échelle (StandardScaler)
         data_scaled = scaler.transform(df_processed)
         df_final = pd.DataFrame(data_scaled, columns=df_processed.columns)
         
-        # ÉTAPE D : Inférences parallèles sur les deux modèles distincts
+        # 2. Prédictions
         pred_energy_log = model_energy.predict(df_final)[0]
         pred_emissions_log = model_emissions.predict(df_final)[0]
         
-        # ÉTAPE E : Transformation inverse (Rebasculement de l'échelle Log vers Réelle)
         energie_finale = np.expm1(pred_energy_log)
         emissions_finales = np.expm1(pred_emissions_log)
         
+        energie_finale = max(0.0, energie_finale)
+        emissions_finales = max(0.0, emissions_finales)
+
+        # ==========================================
+        # 3. ENREGISTREMENT DANS LA BASE DE DONNÉES
+        # ==========================================
+        nouvelle_prediction = PredictionHistory(
+            YearBuilt=features.YearBuilt,
+            PropertyGFATotal=features.PropertyGFATotal,
+            PrimaryPropertyType=features.PrimaryPropertyType,
+            Neighborhood=features.Neighborhood,
+            predicted_energy_kbtu=energie_finale,
+            predicted_emissions_co2=emissions_finales
+        )
+        
+        db.add(nouvelle_prediction) # On ajoute à la transaction
+        db.commit()                 # On valide l'enregistrement
+        # ==========================================
+
         return PredictionResponse(
-            SiteEnergyUse_kBtu=max(0.0, energie_finale),
-            TotalGHGEmissions=max(0.0, emissions_finales)
+            SiteEnergyUse_kBtu=energie_finale,
+            TotalGHGEmissions=emissions_finales
         )
             
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Erreur lors du calcul : {str(e)}")
+        db.rollback() # En cas d'erreur, on annule l'écriture en base
+        raise HTTPException(status_code=400, detail=f"Erreur : {str(e)}")
