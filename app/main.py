@@ -63,11 +63,8 @@ def predict(features: BuildingFeatures, db: Session = Depends(get_db)):
         pred_energy_log = model_energy.predict(df_final)[0]
         pred_emissions_log = model_emissions.predict(df_final)[0]
         
-        energie_finale = np.expm1(pred_energy_log)
-        emissions_finales = np.expm1(pred_emissions_log)
-        
-        energie_finale = max(0.0, energie_finale)
-        emissions_finales = max(0.0, emissions_finales)
+        energie_finale = float(max(0.0, np.expm1(pred_energy_log)))
+        emissions_finales = float(max(0.0, np.expm1(pred_emissions_log)))
 
         # ==========================================
         # 3. ENREGISTREMENT DANS LA BASE DE DONNÉES
