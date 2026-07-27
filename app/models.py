@@ -1,6 +1,15 @@
 from pydantic import BaseModel, Field
 from typing import Optional
+# --- IMPORTS SQL ---
+from pydantic import BaseModel, Field
+from typing import Optional
+from sqlalchemy import Column, Integer, Float, String, DateTime, Boolean
+from sqlalchemy.sql import func
+from app.database import Base
 
+# ==========================================
+# 1. MODÈLES PYDANTIC (Validation de l'API)
+# ==========================================
 class BuildingFeatures(BaseModel):
     # --- Caractéristiques physiques de base ---
     YearBuilt: int = Field(..., example=1980, description="Année de construction (sert à calculer l'Âge)")
@@ -63,3 +72,26 @@ class PredictionResponse(BaseModel):
     # Les deux cibles que ton modèle Futurisys doit prédire
     SiteEnergyUse_kBtu: float = Field(..., description="Consommation énergétique totale prédite (kBtu)")
     TotalGHGEmissions: float = Field(..., description="Émissions de gaz à effet de serre prédites (tonnes de CO2e)")
+    
+# ==========================================
+# MODÈLE SQLALCHEMY (Structure de la BDD)
+# ==========================================
+class PredictionHistory(Base):
+    # Nom de la table dans PostgreSQL
+    __tablename__ = "predictions_history"
+
+    # Clé primaire auto-incrémentée
+    id = Column(Integer, primary_key=True, index=True)
+    
+    # Horodatage automatique de la requête
+    timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Quelques données d'entrée pertinentes à conserver pour l'analyse
+    YearBuilt = Column(Integer)
+    PropertyGFATotal = Column(Float)
+    PrimaryPropertyType = Column(String)
+    Neighborhood = Column(String)
+    
+    # Les prédictions générées par ton modèle
+    predicted_energy_kbtu = Column(Float)
+    predicted_emissions_co2 = Column(Float)
