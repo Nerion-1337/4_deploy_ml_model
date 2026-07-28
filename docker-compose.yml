@@ -6,9 +6,9 @@ services:
     container_name: 4_deploy_ml_model
     restart: always
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: super_password_123
-      POSTGRES_DB: futurisys_db
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
@@ -19,8 +19,8 @@ services:
     container_name: pgadmin_OCR
     restart: always
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@ocr.fr
-      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
     ports:
       - "5050:80"
     depends_on:
