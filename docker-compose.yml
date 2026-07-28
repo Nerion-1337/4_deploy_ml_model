@@ -14,19 +14,17 @@ services:
     volumes:
       - openclassrooms_postgres_data:/var/lib/postgresql/data
 
-  # 2. L'INTERFACE GRAPHIQUE (pgAdmin)
   pgadmin:
     image: dpage/pgadmin4
     container_name: pgadmin_OCR
     restart: always
     environment:
-      # Tes identifiants pour te connecter à l'interface web de pgAdmin
       PGADMIN_DEFAULT_EMAIL: admin@ocr.fr
       PGADMIN_DEFAULT_PASSWORD: admin
     ports:
-      - "5050:80"  # On l'expose sur le port 5050 pour éviter les conflits
+      - "5050:80"
     depends_on:
-      - postgres_db # S'assure que la BDD démarre avant pgAdmin      
+      - postgres_db     
 
 volumes:
   openclassrooms_postgres_data:
