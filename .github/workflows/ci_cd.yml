@@ -1,0 +1,63 @@
+name: CI/CD - Tests & Déploiement
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: 📥 Récupération du code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Installation de Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 🛠️ Installation de uv
+        run: pip install uv
+
+      - name: 📦 Installation des dépendances
+        run: uv sync
+
+      - name: 🧪 Exécution des tests avec Couverture
+        env:
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+        run: uv run python -m pytest --cov=app --cov-report=term-missing -W ignore
+
+  # --- NOUVEAU JOB : DÉPLOIEMENT SUR RENDER ---
+  deploy:
+    needs: test # Ne s'exécute QUE si le job "test" a réussi (cercle vert)
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' # Ne déploie que depuis la branche main
+
+    steps:
+      - name: 🚀 Déploiement automatique vers Render
+        env:
+          RENDER_DEPLOY_HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          echo "Envoi de l'ordre de déploiement à Render..."
+          curl -X GET "$RENDER_DEPLOY_HOOK"
