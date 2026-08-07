@@ -3,11 +3,11 @@ import numpy as np
 import joblib
 import os
 from fastapi import FastAPI, HTTPException, Depends
-from app.models import BuildingFeatures, PredictionResponse, PredictionHistory
-from app.database import engine, get_db, Base
 from sqlalchemy.orm import Session
 # --- IMPORTS MODULE ---
 from app.preprocessing.clean_and_onehot import pipeline_preprocessing
+from app.models import BuildingFeatures, PredictionResponse, BuildingInputDB, PredictionResultDB
+from app.database import engine, get_db, Base
 
 # --- CRÉATION DE LA TABLE AUTOMATIQUE ---
 # Si la table "predictions_history" n'existe pas, SQLAlchemy la crée tout seul !
@@ -46,47 +46,61 @@ def read_root():
             
 # --- ROUTE PREDICT MISE À JOUR AVEC SAUVEGARDE DB ---
 # On ajoute "db: Session = Depends(get_db)" dans les paramètres
-@app.post("/predict", response_model=PredictionResponse, tags=["Prediction"])
+@app.post("/predict", response_model=PredictionResponse)
 def predict(features: BuildingFeatures, db: Session = Depends(get_db)):
-    if model_energy is None or model_emissions is None or scaler is None:
-        raise HTTPException(status_code=503, detail="Modèles non initialisés.")
     
-    try:
-        raw_data = features.model_dump(by_alias=True)
-        
-        # 1. Pipeline ML
-        df_processed = pipeline_preprocessing(raw_data, scaler.feature_names_in_)
-        data_scaled = scaler.transform(df_processed)
-        df_final = pd.DataFrame(data_scaled, columns=df_processed.columns)
-        
-        # 2. Prédictions
-        pred_energy_log = model_energy.predict(df_final)[0]
-        pred_emissions_log = model_emissions.predict(df_final)[0]
-        
-        energie_finale = float(max(0.0, np.expm1(pred_energy_log)))
-        emissions_finales = float(max(0.0, np.expm1(pred_emissions_log)))
+    # 1. On récupère la liste des colonnes mémorisées par le scaler
+    colonnes_attendues = scaler.feature_names_in_
+    
+    # 2. 🚨 CRUCIAL : On transforme l'objet Pydantic en DataFrame Pandas (1 ligne)
+    df_brut = pd.DataFrame([features.model_dump(by_alias=True)])
+    
+    # 3. Feature Engineering (On donne bien le DataFrame, pas l'objet Pydantic)
+    raw_data = features.model_dump(by_alias=True)
+    df_transformed = pipeline_preprocessing(raw_data, expected_columns=colonnes_attendues)
+    
+    # 4. Mise à l'échelle (Scaling)
+    X_scaled = scaler.transform(df_transformed)
 
-        # ==========================================
-        # 3. ENREGISTREMENT DANS LA BASE DE DONNÉES
-        # ==========================================
-        nouvelle_prediction = PredictionHistory(
-            YearBuilt=features.YearBuilt,
-            PropertyGFATotal=features.PropertyGFATotal,
-            PrimaryPropertyType=features.PrimaryPropertyType,
-            Neighborhood=features.Neighborhood,
-            predicted_energy_kbtu=energie_finale,
-            predicted_emissions_co2=emissions_finales
-        )
-        
-        db.add(nouvelle_prediction) # On ajoute à la transaction
-        db.commit()                 # On valide l'enregistrement
-        # ==========================================
+    # 5. Prédictions
+    energy_pred = model_energy.predict(X_scaled)[0]
+    co2_pred = model_emissions.predict(X_scaled)[0]
 
-        return PredictionResponse(
-            SiteEnergyUse_kBtu=energie_finale,
-            TotalGHGEmissions=emissions_finales
-        )
-            
-    except Exception as e:
-        db.rollback() # En cas d'erreur, on annule l'écriture en base
-        raise HTTPException(status_code=400, detail=f"Erreur : {str(e)}")
+    # 5. Sauvegarde dans la Table 1 (Les entrées)
+    db_input = BuildingInputDB(
+        year_built=features.YearBuilt,
+        number_of_buildings=features.NumberofBuildings,
+        number_of_floors=features.NumberofFloors,
+        latitude=features.Latitude,
+        longitude=features.Longitude,
+        property_gfa_total=features.PropertyGFATotal,
+        property_gfa_parking=features.PropertyGFAParking,
+        property_gfa_buildings=features.PropertyGFABuildings,
+        primary_property_type=features.PrimaryPropertyType,
+        largest_property_use_type=features.LargestPropertyUseType,
+        largest_property_use_type_gfa=features.LargestPropertyUseTypeGFA,
+        neighborhood=features.Neighborhood,
+        has_electricity=features.Has_Electricity,
+        has_natural_gas=features.Has_NaturalGas
+    )
+    db.add(db_input)
+    db.commit()
+    db.refresh(db_input) 
+
+    # 6. Sauvegarde dans la Table 2 (Les sorties avec Clé Étrangère)
+    db_prediction = PredictionResultDB(
+        building_input_id=db_input.id,
+        predicted_energy_kbtu=float(energy_pred),
+        predicted_emissions_co2=float(co2_pred)
+    )
+    db.add(db_prediction)
+    db.commit()
+    db.refresh(db_prediction)
+
+    # 7. Retour de la réponse finale
+    return PredictionResponse(
+        prediction_id=db_prediction.id,
+        building_input_id=db_input.id,
+        SiteEnergyUse_kBtu=energy_pred,
+        TotalGHGEmissions=co2_pred
+    )

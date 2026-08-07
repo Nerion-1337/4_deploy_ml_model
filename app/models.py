@@ -3,9 +3,11 @@ from typing import Optional
 # --- IMPORTS SQL ---
 from pydantic import BaseModel, Field
 from typing import Optional
-from sqlalchemy import Column, Integer, Float, String, DateTime, Boolean
+from sqlalchemy import Column, Integer, Float, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
 from app.database import Base
+
 
 # ==========================================
 # 1. MODÈLES PYDANTIC (Validation de l'API)
@@ -74,24 +76,53 @@ class PredictionResponse(BaseModel):
     TotalGHGEmissions: float = Field(..., description="Émissions de gaz à effet de serre prédites (tonnes de CO2e)")
     
 # ==========================================
-# MODÈLE SQLALCHEMY (Structure de la BDD)
+# 2. MODÈLES SQLALCHEMY (Base de données)
 # ==========================================
-class PredictionHistory(Base):
-    # Nom de la table dans PostgreSQL
-    __tablename__ = "predictions_history"
 
-    # Clé primaire auto-incrémentée
+# TABLE 1 : Caractéristiques du Bâtiment (Features d'entrée)
+class BuildingInputDB(Base):
+    __tablename__ = "building_inputs"
+
     id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
     
-    # Horodatage automatique de la requête
+    # Caractéristiques physiques et géographiques
+    year_built = Column(Integer, nullable=False)
+    number_of_buildings = Column(Integer, nullable=False)
+    number_of_floors = Column(Integer, nullable=False)
+    latitude = Column(Float, nullable=False)
+    longitude = Column(Float, nullable=False)
+    
+    # Surfaces (GFA)
+    property_gfa_total = Column(Float, nullable=False)
+    property_gfa_parking = Column(Float, nullable=False)
+    property_gfa_buildings = Column(Float, nullable=False)
+    
+    # Activités et Quartier
+    primary_property_type = Column(String, nullable=False)
+    largest_property_use_type = Column(String, nullable=False)
+    largest_property_use_type_gfa = Column(Float, nullable=False)
+    neighborhood = Column(String, nullable=False)
+    has_electricity = Column(Boolean, default=True)
+    has_natural_gas = Column(Boolean, default=False)
+
+    # Relation vers les prédictions (1 vers N ou 1 vers 1)
+    predictions = relationship("PredictionResultDB", back_populates="building_input", cascade="all, delete-orphan")
+
+
+# TABLE 2 : Résultats des Prédictions du Modèle ML
+class PredictionResultDB(Base):
+    __tablename__ = "prediction_results"
+
+    id = Column(Integer, primary_key=True, index=True)
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
     
-    # Quelques données d'entrée pertinentes à conserver pour l'analyse
-    YearBuilt = Column(Integer)
-    PropertyGFATotal = Column(Float)
-    PrimaryPropertyType = Column(String)
-    Neighborhood = Column(String)
+    # Clé étrangère pointant vers Table 1 (building_inputs.id)
+    building_input_id = Column(Integer, ForeignKey("building_inputs.id", ondelete="CASCADE"), nullable=False)
     
-    # Les prédictions générées par ton modèle
-    predicted_energy_kbtu = Column(Float)
-    predicted_emissions_co2 = Column(Float)
+    # Valeurs prédites par le modèle ML
+    predicted_energy_kbtu = Column(Float, nullable=False)
+    predicted_emissions_co2 = Column(Float, nullable=False)
+
+    # Relation inverse vers Table 1
+    building_input = relationship("BuildingInputDB", back_populates="predictions")
